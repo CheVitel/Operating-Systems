@@ -1,35 +1,25 @@
-﻿# CMakeList.txt: проект CMake для Lab3; включите исходный код и определения,
-# укажите здесь логику для конкретного проекта.
-#
+cmake_minimum_required(VERSION 3.15)
+project(Lab3Project)
 
-# Добавьте источник в исполняемый файл этого проекта.
-add_executable (Lab3 "Lab3.cpp" "Lab3.h" "MarkerControl.cpp" "MarkerControl.h")
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-if (CMAKE_VERSION VERSION_GREATER 3.12)
-  set_property(TARGET Lab3 PROPERTY CXX_STANDARD 20)
-endif()
-
-# TODO: Добавьте тесты и целевые объекты, если это необходимо.
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 
 include(FetchContent)
-
 FetchContent_Declare(
-  catch2
-  GIT_REPOSITORY https://github.com/catchorg/Catch2.git
-  GIT_TAG        v3.4.0
+    googletest
+    URL https://github.com/google/googletest/archive/refs/tags/release-1.12.1.zip
 )
+FetchContent_MakeAvailable(googletest)
 
-FetchContent_MakeAvailable(catch2)
+add_executable(Lab3 Lab3.cpp)
+target_include_directories(Lab3 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
 
-add_executable(runTests
-  tests/main.cpp
-  tests/tests.cpp
-  MarkerControl.cpp
-)
+add_executable(test_lab3 test/test_lab3.cpp Lab3.cpp)
+target_include_directories(test_lab3 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+target_compile_definitions(test_lab3 PRIVATE BUILDING_FOR_TESTS)
+target_link_libraries(test_lab3 PRIVATE GTest::gtest GTest::gtest_main)
 
-target_link_libraries(runTests
-  PRIVATE Catch2::Catch2WithMain
-)
-
-enable_testing()
-add_test(NAME all_tests COMMAND runTests)
+include(GoogleTest)
+gtest_discover_tests(test_lab3)
