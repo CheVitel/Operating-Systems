@@ -1,103 +1,139 @@
-#include "Lab5.h"
+// Sender.cpp
+#include "Lab4.h"
+#define NOMINMAX
+#include <windows.h>
 #include <iostream>
 #include <string>
-#include <cstdlib>
+#include <limits>
 using namespace std;
 
-// Аргументы: sender.exe <fileName> <senderId> <capacity>
 int main(int argc, char* argv[])
 {
-    SetConsoleOutputCP(1251);
-    SetConsoleCP(1251);
-
-    if (argc != 4)
+    if (argc < 2)
     {
-        cerr << "Использование: sender.exe <fileName> <senderId> <capacity>" << endl;
+        cerr << "Usage: Sender.exe <filename>" << endl;
         return 1;
     }
+    const char* filename = argv[1];
 
-    const char* fileName = argv[1];
-    int senderId         = atoi(argv[2]);
-    int capacity         = atoi(argv[3]);
-
-    cout << "[Sender " << senderId << "] Запущен. Файл: " << fileName << endl;
-
-    // 1. Открываем файл для передачи сообщений
-    HANDLE hFile = CreateFileA(fileName,
-        GENERIC_READ | GENERIC_WRITE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE hFile = OpenBinFile(filename);
     if (hFile == INVALID_HANDLE_VALUE)
     {
-        cerr << "[Sender " << senderId
-             << "] Ошибка открытия файла: " << GetLastError() << endl;
-        return 1;
+        cerr << "Sender: failed to open file." << endl;
+        return static_cast<int>(GetLastError());
     }
 
-    // Подключаемся к объектам синхронизации
-    string base = SafeName(string(fileName));
-    HANDLE hSemEmpty = OpenSemaphoreA(SEMAPHORE_ALL_ACCESS, FALSE, ("Global\\Empty_" + base).c_str());
-    HANDLE hSemFull  = OpenSemaphoreA(SEMAPHORE_ALL_ACCESS, FALSE, ("Global\\Full_"  + base).c_str());
-    HANDLE hMutex    = OpenMutexA    (MUTEX_ALL_ACCESS,     FALSE, ("Global\\Mutex_" + base).c_str());
-    if (!hSemEmpty || !hSemFull || !hMutex)
+    HANDLE hSemFree = OpenSemaphoreA(SEMAPHORE_ALL_ACCESS, FALSE, "Lab4_SemFree");
+    if (hSemFree == NULL)
     {
-        cerr << "[Sender " << senderId
-             << "] Ошибка подключения к объектам синхронизации: "
-             << GetLastError() << endl;
-        CloseHandle(hFile); return 1;
+        cerr << "Sender: failed to open SemFree." << endl;
+        CloseHandle(hFile);
+        return static_cast<int>(GetLastError());
+    }
+    HANDLE hSemUsed = OpenSemaphoreA(SEMAPHORE_ALL_ACCESS, FALSE, "Lab4_SemUsed");
+    if (hSemUsed == NULL)
+    {
+        cerr << "Sender: failed to open SemUsed." << endl;
+        CloseHandle(hFile);
+        CloseHandle(hSemFree);
+        return static_cast<int>(GetLastError());
+    }
+    HANDLE hMutex = OpenMutexA(MUTEX_ALL_ACCESS, FALSE, "Lab4_Mutex");
+    if (hMutex == NULL)
+    {
+        cerr << "Sender: failed to open Mutex." << endl;
+        CloseHandle(hFile);
+        CloseHandle(hSemFree);
+        CloseHandle(hSemUsed);
+        return static_cast<int>(GetLastError());
+    }
+    HANDLE hReady = OpenSemaphoreA(SEMAPHORE_ALL_ACCESS, FALSE, "Lab4_SemReady");
+    if (hReady == NULL)
+    {
+        cerr << "Sender: failed to open Ready semaphore." << endl;
+        CloseHandle(hFile);
+        CloseHandle(hSemFree);
+        CloseHandle(hSemUsed);
+        CloseHandle(hMutex);
+        return static_cast<int>(GetLastError());
     }
 
-    // 2. Отправляем сигнал готовности Receiver'у
-    string evName = "Global\\Ready_" + base + "_" + to_string(senderId);
-    HANDLE hReady = OpenEventA(EVENT_ALL_ACCESS, FALSE, evName.c_str());
-    if (!hReady)
-    {
-        cerr << "[Sender " << senderId
-             << "] Ошибка открытия события: " << GetLastError() << endl;
-        CloseHandle(hFile); return 1;
-    }
-    SetEvent(hReady);
+    ReleaseSemaphore(hReady, 1, NULL);
     CloseHandle(hReady);
-    cout << "[Sender " << senderId << "] Готов к работе." << endl;
 
-    // 3. Основной цикл: s = отправить, q = завершить
-    SharedData sd{ hSemEmpty, hSemFull, hMutex, hFile, capacity };
-    cout << "\nКоманды: [s] отправить сообщение  [q] завершить\n" << endl;
     while (true)
     {
-        cout << "Sender[" << senderId << "]> ";
+        cout << "[s] send message  [q] quit: ";
         string cmd;
         cin >> cmd;
+        cin.ignore((numeric_limits<streamsize>::max)(), '\n');
+
+        if (cmd == "q" || cmd == "Q")
+            break;
 
         if (cmd == "s" || cmd == "S")
         {
-            cout << "Сообщение (до " << MSG_MAX_LEN - 1 << " символов): ";
-            string msg;
-            cin.ignore();
-            getline(cin, msg);
-            if ((int)msg.size() >= MSG_MAX_LEN)
-                msg.resize(MSG_MAX_LEN - 1);
+            cout << "Enter message (up to " << (MAX_MSG_LEN - 1) << " chars): ";
+            string input;
+            getline(cin, input);
 
-            if (Enqueue(sd, msg.c_str()))
-                cout << "[Sender " << senderId
-                     << "] Отправлено: \"" << msg << "\"" << endl;
-            else
-                cerr << "[Sender " << senderId << "] Ошибка записи." << endl;
-        }
-        else if (cmd == "q" || cmd == "Q")
-        {
-            cout << "[Sender " << senderId << "] Завершение." << endl;
-            break;
+            if (static_cast<int>(input.size()) >= MAX_MSG_LEN)
+            {
+                input = input.substr(0, MAX_MSG_LEN - 1);
+                cout << "Message truncated to " << (MAX_MSG_LEN - 1) << " chars." << endl;
+            }
+
+            // ����������� �� ������������ ���� �� ������ ���������� �����
+            WaitForSingleObject(hSemFree, INFINITE);
+
+            WaitForSingleObject(hMutex, INFINITE);
+
+            QueueHeader hdr;
+            if (!ReadHeader(hFile, hdr))
+            {
+                cerr << "Failed to read header." << endl;
+                ReleaseMutex(hMutex);
+                ReleaseSemaphore(hSemFree, 1, NULL); // ���������� ����
+                break;
+            }
+
+            MsgRecord rec;
+            ZeroMemory(&rec, sizeof(MsgRecord));
+            strncpy_s(rec.text, MAX_MSG_LEN, input.c_str(), _TRUNCATE);
+            if (!WriteSlot(hFile, hdr.tail, rec))
+            {
+                cerr << "Failed to write slot." << endl;
+                ReleaseMutex(hMutex);
+                ReleaseSemaphore(hSemFree, 1, NULL);
+                break;
+            }
+
+            hdr.tail = (hdr.tail + 1) % hdr.capacity;
+            if (!WriteHeader(hFile, hdr))
+            {
+                cerr << "Failed to write header." << endl;
+                ReleaseMutex(hMutex);
+                ReleaseSemaphore(hSemFree, 1, NULL);
+                break;
+            }
+
+            ReleaseMutex(hMutex);
+
+            // ����������� ������� ������� ������
+            ReleaseSemaphore(hSemUsed, 1, NULL);
+            cout << "Message sent." << endl;
         }
         else
         {
-            cout << "Используйте 's' или 'q'." << endl;
+            cout << "Unknown command. Use [s] or [q]." << endl;
         }
     }
 
-    CloseHandle(hSemEmpty);
-    CloseHandle(hSemFull);
-    CloseHandle(hMutex);
     CloseHandle(hFile);
+    CloseHandle(hSemFree);
+    CloseHandle(hSemUsed);
+    CloseHandle(hMutex);
+
+    cout << "Sender done." << endl;
     return 0;
 }

@@ -1,50 +1,22 @@
 #pragma once
 #include <windows.h>
-#include <string>
 
-// Максимальная длина сообщения (включая '\0')
-static const int MSG_MAX_LEN = 20;
+#define MAX_MSG_LEN 20
 
-// ─── Структуры файла-очереди ──────────────────────────────────────────────
+struct MsgRecord
+{
+    char text[MAX_MSG_LEN];
+};
 
-#pragma pack(push, 1)
-
-// Заголовок: первая запись файла (занимает MSG_MAX_LEN байт)
 struct QueueHeader
 {
-    int head;       // индекс слота для чтения
-    int tail;       // индекс слота для записи
-    int count;      // текущее кол-во сообщений
-    int capacity;   // максимальное кол-во сообщений
-    char pad[MSG_MAX_LEN - 4 * (int)sizeof(int)];
+    int capacity;
+    int head;
+    int tail;
 };
 
-// Одна запись сообщения (MSG_MAX_LEN байт)
-struct MessageRecord
-{
-    char text[MSG_MAX_LEN];
-};
-
-#pragma pack(pop)
-
-// ─── Данные, общие для Receiver и Sender ─────────────────────────────────
-
-struct SharedData
-{
-    HANDLE hSemEmpty;   // счётчик свободных слотов
-    HANDLE hSemFull;    // счётчик занятых слотов
-    HANDLE hMutex;      // защита файла
-    HANDLE hFile;       // дескриптор файла очереди
-    int    capacity;    // ёмкость очереди
-};
-
-// ─── Объявления общих функций ─────────────────────────────────────────────
-
-bool      WriteAt        (HANDLE hFile, long long offset, const void* buf, DWORD size);
-bool      ReadAt         (HANDLE hFile, long long offset,       void* buf, DWORD size);
-long long SlotOffset     (int idx);
-std::string SafeName     (const std::string& fileName);
-bool      CreateQueueFile(HANDLE hFile, int capacity);
-
-bool      Enqueue(SharedData& sd, const char* text);
-bool      Dequeue(SharedData& sd, char out[MSG_MAX_LEN]);
+HANDLE OpenBinFile(const char* filename);
+bool ReadHeader(HANDLE hFile, QueueHeader& hdr);
+bool WriteHeader(HANDLE hFile, const QueueHeader& hdr);
+bool ReadSlot(HANDLE hFile, int idx, MsgRecord& rec);
+bool WriteSlot(HANDLE hFile, int idx, const MsgRecord& rec);

@@ -1,144 +1,218 @@
-#include "Lab5.h"
+// Receiver.cpp
+#include "Lab4.h"
+#define NOMINMAX
+#include <windows.h>
 #include <iostream>
-#include <string>
 #include <vector>
+#include <limits>
 using namespace std;
 
 int main()
 {
-    SetConsoleOutputCP(1251);
-    SetConsoleCP(1251);
-
-    // 1. Вводим имя файла и ёмкость очереди
-    string fileName;
-    int capacity = 0;
-    cout << "Введите имя бинарного файла: ";
-    cin >> fileName;
-    cout << "Введите количество записей (ёмкость): ";
+    char filename[256];
+    int  capacity;
+    cout << "Enter binary file name: ";
+    cin >> filename;
+    cout << "Enter number of slots: ";
     cin >> capacity;
-    if (capacity <= 0) { cerr << "Ошибка: ёмкость должна быть > 0." << endl; return 1; }
-
-    // 2. Создаём бинарный файл для сообщений
-    HANDLE hFile = CreateFileA(fileName.c_str(),
-        GENERIC_READ | GENERIC_WRITE,
-        FILE_SHARE_READ | FILE_SHARE_WRITE,
-        NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
-    if (hFile == INVALID_HANDLE_VALUE)
+    if (capacity <= 0)
     {
-        cerr << "Ошибка создания файла: " << GetLastError() << endl;
+        cerr << "Number of slots must be > 0." << endl;
         return 1;
     }
-    if (!CreateQueueFile(hFile, capacity))
-    {
-        cerr << "Ошибка инициализации файла." << endl;
-        CloseHandle(hFile); return 1;
-    }
-    cout << "[Receiver] Файл создан: " << fileName << " (слотов: " << capacity << ")" << endl;
 
-    // Создаём объекты синхронизации
-    string base = SafeName(fileName);
-    HANDLE hSemEmpty = CreateSemaphoreA(NULL, capacity, capacity, ("Global\\Empty_" + base).c_str());
-    HANDLE hSemFull  = CreateSemaphoreA(NULL, 0,        capacity, ("Global\\Full_"  + base).c_str());
-    HANDLE hMutex    = CreateMutexA    (NULL, FALSE,               ("Global\\Mutex_" + base).c_str());
-    if (!hSemEmpty || !hSemFull || !hMutex)
+    HANDLE hFile = CreateFileA(
+        filename,
+        GENERIC_READ | GENERIC_WRITE,
+        FILE_SHARE_READ | FILE_SHARE_WRITE,
+        NULL,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    );
+    if (hFile == INVALID_HANDLE_VALUE)
     {
-        cerr << "Ошибка создания объектов синхронизации: " << GetLastError() << endl;
-        CloseHandle(hFile); return 1;
+        cerr << "Failed to create file." << endl;
+        return static_cast<int>(GetLastError());
     }
 
-    // 3. Вводим количество процессов Sender
-    int numSenders = 0;
-    cout << "Введите количество процессов Sender: ";
-    cin >> numSenders;
-    if (numSenders <= 0) { cerr << "Ошибка: кол-во Sender > 0." << endl; return 1; }
-
-    // 4. Создаём события готовности для каждого Sender'а
-    vector<HANDLE> evReady(numSenders, NULL);
-    for (int i = 0; i < numSenders; i++)
+    QueueHeader hdr;
+    hdr.capacity = capacity;
+    hdr.head = 0;
+    hdr.tail = 0;
+    if (!WriteHeader(hFile, hdr))
     {
-        string evName = "Global\\Ready_" + base + "_" + to_string(i);
-        evReady[i] = CreateEventA(NULL, TRUE, FALSE, evName.c_str());
-        if (!evReady[i])
+        cerr << "Failed to write header." << endl;
+        CloseHandle(hFile);
+        return 1;
+    }
+
+    MsgRecord empty;
+    ZeroMemory(&empty, sizeof(MsgRecord));
+    for (int i = 0; i < capacity; i++)
+    {
+        if (!WriteSlot(hFile, i, empty))
         {
-            cerr << "Ошибка создания события для Sender " << i
-                 << ": " << GetLastError() << endl;
-            CloseHandle(hFile); return 1;
+            cerr << "Failed to initialize slot " << i << endl;
+            CloseHandle(hFile);
+            return 1;
         }
     }
 
-    // Путь к sender.exe (лежит рядом с receiver.exe)
-    char selfPath[MAX_PATH]{};
-    GetModuleFileNameA(NULL, selfPath, MAX_PATH);
-    string senderExe = selfPath;
-    size_t sl = senderExe.find_last_of("\\/");
-    if (sl != string::npos) senderExe = senderExe.substr(0, sl + 1);
-    senderExe += "sender.exe";
-
-    // Запускаем Sender'ы: sender.exe <fileName> <id> <capacity>
-    vector<HANDLE> hProc(numSenders, NULL);
-    for (int i = 0; i < numSenders; i++)
+    HANDLE hSemFree = CreateSemaphoreA(NULL, capacity, capacity, "Lab4_SemFree");
+    if (hSemFree == NULL)
     {
-        string cmd = "\"" + senderExe + "\" \"" + fileName + "\" "
-                     + to_string(i) + " " + to_string(capacity);
-        vector<char> buf(cmd.begin(), cmd.end());
-        buf.push_back('\0');
+        cerr << "Failed to create SemFree." << endl;
+        CloseHandle(hFile);
+        return static_cast<int>(GetLastError());
+    }
+    HANDLE hSemUsed = CreateSemaphoreA(NULL, 0, capacity, "Lab4_SemUsed");
+    if (hSemUsed == NULL)
+    {
+        cerr << "Failed to create SemUsed." << endl;
+        CloseHandle(hFile);
+        CloseHandle(hSemFree);
+        return static_cast<int>(GetLastError());
+    }
+    HANDLE hMutex = CreateMutexA(NULL, FALSE, "Lab4_Mutex");
+    if (hMutex == NULL)
+    {
+        cerr << "Failed to create Mutex." << endl;
+        CloseHandle(hFile);
+        CloseHandle(hSemFree);
+        CloseHandle(hSemUsed);
+        return static_cast<int>(GetLastError());
+    }
 
-        STARTUPINFOA si{};
+    int senderCount;
+    cout << "Enter number of Sender processes: ";
+    cin >> senderCount;
+    if (senderCount <= 0)
+    {
+        cerr << "Number of Senders must be > 0." << endl;
+        CloseHandle(hFile);
+        CloseHandle(hSemFree);
+        CloseHandle(hSemUsed);
+        CloseHandle(hMutex);
+        return 1;
+    }
+    if (senderCount > 20)
+    {
+        cerr << "Too much." << endl;
+        CloseHandle(hFile);
+        CloseHandle(hSemFree);
+        CloseHandle(hSemUsed);
+        CloseHandle(hMutex);
+        return 1;
+    }
+
+    HANDLE hReady = CreateSemaphoreA(NULL, 0, senderCount, "Lab4_SemReady");
+    if (hReady == NULL)
+    {
+        cerr << "Failed to create Ready semaphore." << endl;
+        return static_cast<int>(GetLastError());
+    }
+
+    vector<PROCESS_INFORMATION> pis(senderCount);
+    for (int i = 0; i < senderCount; i++)
+    {
+        char cmdLine[512];
+        sprintf_s(cmdLine, sizeof(cmdLine), "Sender.exe %s", filename);
+
+        STARTUPINFOA si;
+        ZeroMemory(&si, sizeof(STARTUPINFOA));
         si.cb = sizeof(STARTUPINFOA);
-        PROCESS_INFORMATION pi{};
-        if (!CreateProcessA(NULL, buf.data(), NULL, NULL, FALSE,
-                            CREATE_NEW_CONSOLE, NULL, NULL, &si, &pi))
+
+        if (!CreateProcessA(NULL, cmdLine, NULL, NULL, FALSE,
+            CREATE_NEW_CONSOLE, NULL, NULL, &si, &pis[i]))
         {
-            cerr << "[Receiver] Ошибка запуска Sender " << i
-                 << ": " << GetLastError() << endl;
+            cerr << "Failed to launch Sender #" << (i + 1) << "." << endl;
+            return static_cast<int>(GetLastError());
         }
-        else
-        {
-            hProc[i] = pi.hProcess;
-            CloseHandle(pi.hThread);
-        }
+        cout << "Sender #" << (i + 1) << " started." << endl;
     }
-    cout << "[Receiver] Запущено Sender'ов: " << numSenders << endl;
 
-    // 5. Ждём сигнал готовности от всех Sender'ов
-    cout << "[Receiver] Ожидание готовности Sender'ов..." << endl;
-    WaitForMultipleObjects((DWORD)numSenders, evReady.data(), TRUE, INFINITE);
-    cout << "[Receiver] Все Sender'ы готовы." << endl;
-    for (HANDLE ev : evReady) CloseHandle(ev);
+    cout << "Waiting for all Senders..." << endl;
+    for (int i = 0; i < senderCount; i++)
+        WaitForSingleObject(hReady, INFINITE);
+    cout << "All Senders ready." << endl;
 
-    // 6. Основной цикл: r = читать, q = завершить
-    SharedData sd{ hSemEmpty, hSemFull, hMutex, hFile, capacity };
-    cout << "\nКоманды: [r] читать сообщение  [q] завершить\n" << endl;
     while (true)
     {
-        cout << "Receiver> ";
-        string cmd;
+        cout << "\n[r] read message  [q] quit: ";
+        char cmd;
         cin >> cmd;
+        cin.ignore((numeric_limits<streamsize>::max)(), '\n');
 
-        if (cmd == "r" || cmd == "R")
-        {
-            char msg[MSG_MAX_LEN]{};
-            if (Dequeue(sd, msg))
-                cout << "[Receiver] Получено: \"" << msg << "\"" << endl;
-            else
-                cerr << "[Receiver] Ошибка чтения." << endl;
-        }
-        else if (cmd == "q" || cmd == "Q")
-        {
-            cout << "[Receiver] Завершение работы." << endl;
+        if (cmd == 'q' || cmd == 'Q')
             break;
+
+        if (cmd == 'r' || cmd == 'R')
+        {
+            WaitForSingleObject(hSemUsed, INFINITE);
+
+            WaitForSingleObject(hMutex, INFINITE);
+
+            if (!ReadHeader(hFile, hdr))
+            {
+                cerr << "Failed to read header." << endl;
+                ReleaseMutex(hMutex);
+                break;
+            }
+
+            MsgRecord rec;
+            if (!ReadSlot(hFile, hdr.head, rec))
+            {
+                cerr << "Failed to read slot." << endl;
+                ReleaseMutex(hMutex);
+                break;
+            }
+
+            MsgRecord empty2;
+            ZeroMemory(&empty2, sizeof(MsgRecord));
+            if (!WriteSlot(hFile, hdr.head, empty2))
+            {
+                cerr << "Failed to clear slot." << endl;
+                ReleaseMutex(hMutex);
+                break;
+            }
+
+            hdr.head = (hdr.head + 1) % hdr.capacity;
+            if (!WriteHeader(hFile, hdr))
+            {
+                cerr << "Failed to write header." << endl;
+                ReleaseMutex(hMutex);
+                break;
+            }
+
+            ReleaseMutex(hMutex);
+
+            cout << "[Receiver] Got: " << rec.text << endl;
+
+            // ����������� ���� ���� ��� ���������
+            ReleaseSemaphore(hSemFree, 1, NULL);
         }
         else
         {
-            cout << "Используйте 'r' или 'q'." << endl;
+            cout << "Unknown command. Use [r] or [q]." << endl;
         }
     }
 
-    for (HANDLE hp : hProc) if (hp) CloseHandle(hp);
-    CloseHandle(hSemEmpty);
-    CloseHandle(hSemFull);
-    CloseHandle(hMutex);
+    // ������� ���������� ���� ��������� Sender (�������������, �� ���������)
+    for (int i = 0; i < senderCount; i++)
+        WaitForSingleObject(pis[i].hProcess, INFINITE);
+
     CloseHandle(hFile);
-    DeleteFileA(fileName.c_str());
+    CloseHandle(hSemFree);
+    CloseHandle(hSemUsed);
+    CloseHandle(hMutex);
+    CloseHandle(hReady);
+    for (int i = 0; i < senderCount; i++)
+    {
+        CloseHandle(pis[i].hProcess);
+        CloseHandle(pis[i].hThread);
+    }
+
+    cout << "Receiver done." << endl;
     return 0;
 }

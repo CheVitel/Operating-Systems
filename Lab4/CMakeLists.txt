@@ -1,27 +1,38 @@
-cmake_minimum_required(VERSION 3.15)
-project(Lab5Project)
+cmake_minimum_required(VERSION 3.20)
+project(Lab4 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
+add_library(lab4_common STATIC
+    Lab4.cpp
+    Lab4.h
+)
+
+add_executable(Receiver
+    Receiver.cpp
+)
+target_link_libraries(Receiver PRIVATE lab4_common)
+
+add_executable(Sender
+    Sender.cpp
+)
+target_link_libraries(Sender PRIVATE lab4_common)
 
 include(FetchContent)
 FetchContent_Declare(
     googletest
-    URL https://github.com/google/googletest/archive/refs/tags/release-1.12.1.zip
+    URL https://github.com/google/googletest/archive/refs/tags/v1.14.0.zip
 )
+set(gtest_force_shared_crt ON CACHE BOOL "" FORCE)
 FetchContent_MakeAvailable(googletest)
 
-add_executable(receiver receiver.cpp Lab4Queue.cpp)
-target_include_directories(receiver PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
+enable_testing()
 
-add_executable(sender sender.cpp Lab4Queue.cpp)
-target_include_directories(sender PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-
-add_executable(test_lab4 test/test_lab4.cpp Lab4Queue.cpp)
-target_include_directories(test_lab4 PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})
-target_link_libraries(test_lab4 PRIVATE GTest::gtest GTest::gtest_main)
+add_executable(Lab4Test
+    tests/Lab4Test.cpp
+)
+target_link_libraries(Lab4Test PRIVATE lab4_common GTest::gtest_main)
 
 include(GoogleTest)
-gtest_discover_tests(test_lab4)
+gtest_discover_tests(Lab4Test)
